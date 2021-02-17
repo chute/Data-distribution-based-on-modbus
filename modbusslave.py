@@ -3,58 +3,99 @@ import time
 import modbus_tk
 import modbus_tk.defines as cst
 from modbus_tk import modbus_tcp
+import ctypes
+from copy import deepcopy
 
 # 设定默认值
 CityName = '错误'
 SlaveNum = 0
-SlaveData = [[0],[0],[0],[0]]
+SlaveData = [[0], [0], [0], [0]]
+checktime = ["06:40", "08:40", "10:40", "12:40", "14:40",
+             "16:40", "18:40", "20:40", ]
+hour = num = tem = hum = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+slaveupdate = []
 
-hour=num=tem =hum = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
-slaveupdate=[]
 
 # 写入实时数据
 def setRTData(Name, Slave, Data):
-    global CityName, SlaveNum, SlaveData,slaveupdate
+    global CityName, SlaveNum, SlaveData, slaveupdate
     CityName = Name
     SlaveNum = Slave
     SlaveData = Data
-    temp=(SlaveNum,)
-    SlaveData=temp+SlaveData
+    SlaveData.insert(0, SlaveNum)
     print(CityName, SlaveNum, SlaveData)
-    slaveupdate[Slave-1].set_values(str(Slave), 0, SlaveData)
-    RTlog=open('RT.log',mode='a')
-    RTlog.write(str(CityName)+str(SlaveNum)+str(SlaveData)+'\n')
+    RTlog = open('log\\RT.log', mode='a')
+    RTlog.write(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + '\n' + str(CityName) + str(SlaveNum) + str(
+        SlaveData) + '\n')
     RTlog.close()
+    i = 0
+    while i < len(SlaveData):
+        SlaveData[i] = ctypes.c_uint16(SlaveData[i]).value
+        i = i + 1
+    slaveupdate[Slave - 1].set_values(str(Slave), 0, SlaveData)
+
+
 # 写入24h数据
 def set24Data(Name, Slave, Data):
-    global CityName, SlaveNum, SlaveData,hour,num, tem, hum, slaveupdate
+    global CityName, SlaveNum, SlaveData, hour, num, tem, hum, slaveupdate, checktime
     CityName = Name
     SlaveNum = Slave
     SlaveData = Data
     for item in SlaveData:
         print(item)
-    hourflag=SlaveData[0][0]
-
-    hour = SlaveData[0][:24-hourflag]
-    num=SlaveData[1][:24-hourflag]
-    tem=SlaveData[2][:24-hourflag]
-    hum=SlaveData[3][:24-hourflag]
-    slaveupdate[Slave-1].set_values(str(Slave), 11+hourflag, hour)
-    slaveupdate[Slave - 1].set_values(str(Slave), 35+hourflag, num)
-    slaveupdate[Slave - 1].set_values(str(Slave), 59+hourflag, tem)
-    slaveupdate[Slave - 1].set_values(str(Slave), 83+hourflag, hum)
+    if SlaveData[0][0] == 0:
+        hour = SlaveData[0]
+        num = SlaveData[1]
+        tem = SlaveData[2]
+        hum = SlaveData[3]
     nummax = max(num)
     temmax = max(tem)
     temmin = min(tem)
-    temavg = int(sum(tem)/len(tem))
-    humavg = int(sum(hum)/len(hum))
-    slaveupdate[Slave - 1].set_values(str(Slave), 3, [nummax,temmax,temmin,temavg,humavg])
+    temavg = int(sum(tem) / len(tem))
+    humavg = int(sum(hum) / len(hum))
+    temavgday = int(sum(tem[8:16]) / 8)
+    i = 0
+    tem16 = deepcopy(tem)
+    while i < len(tem):
+        tem16[i] = ctypes.c_uint16(tem[i]).value
+        i = i + 1
+    temmax16 = ctypes.c_uint16(temmax).value
+    temmin16 = ctypes.c_uint16(temmin).value
+    temavg16 = ctypes.c_uint16(temavg).value
+    temavgday16 = ctypes.c_uint16(temavgday).value
 
-    H24log=open('H24.log',mode='a')
-    H24log.write(CityName+'\t'+str(SlaveNum)+'\t'+str(nummax)+'\t'+str(temmax)+'\t'\
-                 +str(temmin)+'\t'+str(temavg)+'\t'+str(humavg)+'\n'+str(hour)+'\n'\
-                 +str(num)+'\n'+str(tem)+'\n'+str(hum)+'\n\n')
+    slaveupdate[Slave - 1].set_values(str(Slave), 25, [nummax, temmax16, temmin16, temavg16, humavg, temavgday16])
+    slaveupdate[Slave - 1].set_values(str(Slave), 35, num)
+    slaveupdate[Slave - 1].set_values(str(Slave), 59, tem16)
+    slaveupdate[Slave - 1].set_values(str(Slave), 83, hum)
+    slaveupdate[Slave - 1].set_values(str(Slave), 107, hour)
+
+    temAmplitude = temmax - temmin
+    Yvaluemax = int(temmax + temAmplitude * 0.4)
+    Yvaluemin = int(temmin - temAmplitude * 0.4)
+    YAmplitude = Yvaluemax - Yvaluemin
+    if YAmplitude == 0:
+        YAmplitude = 1
+    Ycoordinate = []
+    for item in tem:
+        Ycoordinate.append(int((item - Yvaluemin) / YAmplitude * 100))
+    Yvaluemax16 = ctypes.c_uint16(Yvaluemax).value
+    Yvaluemin16 = ctypes.c_uint16(Yvaluemin).value
+    YAmplitude16 = ctypes.c_uint16(YAmplitude).value
+    Ycoordinate16 = Ycoordinate
+    i = 0
+    while i < len(Ycoordinate):
+        Ycoordinate16[i] = ctypes.c_uint16(Ycoordinate[i]).value
+        i = i + 1
+    slaveupdate[Slave - 1].set_values(str(Slave), 169, [Yvaluemax16, Yvaluemin16, YAmplitude16])
+    slaveupdate[Slave - 1].set_values(str(Slave), 173, Ycoordinate16)
+    H24log = open('log\\H24.log', mode='a')
+    H24log.write(
+        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + '\n' + CityName + '\t' + str(SlaveNum) + '\t' + \
+        str(nummax) + '\t' + str(temmax) + '\t' + str(temmin) + '\t' + str(temavg) + '\t' + str(humavg) + '\n' + \
+        str(temavgday) + '\n' + str(hour) + '\n' + str(num) + '\n' + str(tem) + '\n' + str(hum) + '\n\n')
     H24log.close()
+
 
 # modbus主体
 def main():
@@ -63,7 +104,7 @@ def main():
 
     try:
         # Create the server
-        server = modbus_tcp.TcpServer()
+        server = modbus_tcp.TcpServer(port=1004)
         logger.info("running...")
         logger.info("enter 'quit' for closing the server")
 
@@ -79,14 +120,6 @@ def main():
             slaveupdate[i - 1] = server.get_slave(i)
             i += 1
 
-        '''
-        slave1 = server.add_slave(1)
-        slave2 = server.add_slave(2)
-        slave1.add_block('1', cst.HOLDING_REGISTERS, 0, 800)
-        slave2.add_block('2', cst.HOLDING_REGISTERS, 0, 200)
-        
-        slave0 = server.get_slave(1)
-        '''
         while True:
             cmd = sys.stdin.readline()
             args = cmd.split(' ')
