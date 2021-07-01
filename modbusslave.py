@@ -55,9 +55,9 @@ def set24Data(Name, Slave, Data):
     humavg = int(sum(hum) / len(hum))
     temavgday = int(sum(tem[8:16]) / 8)
     i = 0
-    tem16 = deepcopy(tem)
+    tem16 = []
     while i < len(tem):
-        tem16[i] = ctypes.c_uint16(tem[i]).value
+        tem16.append(ctypes.c_uint16(tem[i]).value)
         i = i + 1
     temmax16 = ctypes.c_uint16(temmax).value
     temmin16 = ctypes.c_uint16(temmin).value
@@ -91,8 +91,8 @@ def set24Data(Name, Slave, Data):
     slaveupdate[Slave - 1].set_values(str(Slave), 173, Ycoordinate16)
     H24log = open('log\\H24.log', mode='a')
     H24log.write(
-        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + '\n' + CityName + '\t' + str(SlaveNum) + '\t' + \
-        str(nummax) + '\t' + str(temmax) + '\t' + str(temmin) + '\t' + str(temavg) + '\t' + str(humavg) + '\n' + \
+        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + '\n' + CityName + '\t' + str(SlaveNum) + '\t' +
+        str(nummax) + '\t' + str(temmax) + '\t' + str(temmin) + '\t' + str(temavg) + '\t' + str(humavg) + '\n' +
         str(temavgday) + '\n' + str(hour) + '\n' + str(num) + '\n' + str(tem) + '\n' + str(hum) + '\n\n')
     H24log.close()
 
@@ -116,7 +116,7 @@ def main():
             slave.append(i)
             slaveupdate.append(i)
             slave[i - 1] = server.add_slave(i)
-            slave[i - 1].add_block(str(i), cst.HOLDING_REGISTERS, 0, 200)
+            slave[i - 1].add_block(str(i), cst.HOLDING_REGISTERS, 0, 1000)
             slaveupdate[i - 1] = server.get_slave(i)
             i += 1
 

@@ -78,6 +78,7 @@ class City:
 
     def get24Data(self):
         self.City24Weather = OWeather.get24Weather(self.CityCode)
+        print(self.City24Weather)
         try:
             hour24temp = open('log\\%shour24temp.log' % (self.CityName), 'r')
             temp = hour24temp.readlines()
@@ -91,13 +92,13 @@ class City:
             print('未能恢复24h数据')
         hourflag = self.City24Weather[0][0]
         i = 0
-        while 0 <= hourflag < 24:
-            temp[0 + hourflag] = self.City24Weather[0][i]
-            temp[24 + hourflag] = self.City24Weather[1][i]
-            temp[48 + hourflag] = self.City24Weather[2][i]
-            temp[72 + hourflag] = self.City24Weather[3][i]
-            hourflag += 1
-            i += 1
+        if 0 <= hourflag < 24:
+            while i < (24-hourflag):
+                temp[0 + hourflag+i] = self.City24Weather[0][i]
+                temp[24 + hourflag+i] = self.City24Weather[1][i]
+                temp[48 + hourflag+i] = self.City24Weather[2][i]
+                temp[72 + hourflag+i] = self.City24Weather[3][i]
+                i += 1
         tempwrite = ''
         for item in temp:
             tempwrite = tempwrite + str(item) + '\n'
