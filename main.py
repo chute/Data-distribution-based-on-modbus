@@ -1,24 +1,117 @@
-import OWeather, modbusslave
-import pandas as pd
-import time
 import threading
+from datetime import datetime
+import logging
+import pandas as pd
+import mysql.connector
+import schedule
+from time import sleep
 
-startflag = 0
-# 启动modbus从站
-modbusThread = threading.Thread(target=modbusslave.main)
-modbusThread.start()
-modbusThread.join(1)
+import OWeather
+import modbusslave
+
+# 目标城市列表
+city_list = {}
+logging.basicConfig(filename='main.log', filemode='a', level=logging.INFO, format='%(asctime)s %(message)s')
 
 
-# 获取需要查询的城市列表，及modbus地址
-def getTarCityList():
-    TCL = r'tarcitylist.csv'
-    data = pd.read_csv(TCL, engine='python')
-    data = data.dropna()
-    TarCityList = {}
-    for name, address in zip(data['地名'], data['地址']):
-        TarCityList[name] = str(address)
-    return TarCityList
+# 从数据库读取城市列表
+def get_target_cities():
+    global city_list
+    conn = mysql.connector.connect(host='localhost', user='root', passwd='dcny123', database="weather")
+    cur = conn.cursor()
+    sql = "SELECT * FROM city_config"
+    cur.execute(sql)
+    allfetch = cur.fetchall()
+    city_list = dict(allfetch)
+    conn.close()
+    logging.info('Get city list: %s' % allfetch)
+
+
+# 将数据从实时表转储到历史表
+def move_rt_data(cityname):
+    conn = mysql.connector.connect(host='localhost', user='root', passwd='dcny123', database="weather")
+    cur = conn.cursor()
+    sql = "SELECT class, value FROM realtime_info WHERE city='{}' AND hour=-1".format(cityname)
+    cur.execute(sql)
+    allfetch = cur.fetchall()
+    logging.info('move_rt_data: get data length: %s' % len(allfetch))
+    nowdtstamp = datetime.now()
+    nowhour = datetime.strftime(nowdtstamp, '%H')
+    for item in allfetch:
+        sql = """INSERT INTO historyrt_info (city, class, hour, value, dtstamp) VALUES ('{}', '{}', {}, {}, '{}')
+            """.format(cityname, item[0], nowhour, item[1], nowdtstamp)
+        cur.execute(sql)
+    receive_rows = conn.commit()
+    conn.close()
+    logging.info('move_rt_data: put data successful: %s rows' % receive_rows)
+
+
+# 将数据从实时表转储到历史表
+def move_24_data(cityname):
+    conn = mysql.connector.connect(host='localhost', user='root', passwd='dcny123', database="weather")
+    cur = conn.cursor()
+    for i in range(24):
+        sql = "SELECT class, value FROM realtime_info WHERE city='{}' AND hour={}".format(cityname, i)
+        cur.execute(sql)
+        allfetch = cur.fetchall()
+        logging.info('move_24_data: get data length: %s' % len(allfetch))
+        nowdtstamp = datetime.now()
+        for item in allfetch:
+            sql = """INSERT INTO history24_info (city, class, hour, value, dtstamp) VALUES ('{}', '{}', {}, {}, '{}')
+                    """.format(cityname, item[0], i, item[1], nowdtstamp)
+            cur.execute(sql)
+    receive_rows = conn.commit()
+    conn.close()
+    logging.info('move_24_data: put data successful: %s rows' % receive_rows)
+
+
+# 将数据从实时表写入从站
+def move_rt_slave(cityid, cityname):
+    conn = mysql.connector.connect(host='localhost', user='root', passwd='dcny123', database="weather")
+    cur = conn.cursor()
+    sql = "SELECT class, value FROM realtime_info WHERE city='{}' AND hour=-1".format(cityname)
+    cur.execute(sql)
+    allfetch = cur.fetchall()
+    logging.info('move_rt_slave: get data length: %s' % len(allfetch))
+    conn.close()
+    info = dict(allfetch)
+    infolist = [info['code'],
+                info['temperature'],
+                info['feels_like'],
+                info['pressure'],
+                info['humidity'],
+                info['visibility'],
+                info['wind_direction_degree'],
+                info['wind_speed'],
+                info['wind_scale'],
+                info['clouds']]
+    unit16list = modbusslave.setRTData(cityid, infolist)
+    logging.info('move_rt_data: put slave successful: %s' % unit16list)
+
+
+# 将数据从实时表写入从站
+def move_24_slave(cityid, cityname):
+    conn = mysql.connector.connect(host='localhost', user='root', passwd='dcny123', database="weather")
+    cur = conn.cursor()
+    sql = "SELECT class, hour, value FROM realtime_info WHERE city='{}' AND hour>-1".format(cityname)
+    cur.execute(sql)
+    allfetch = cur.fetchall()
+    logging.info('move_24_slave: get data length: %s' % len(allfetch))
+    info = {}
+    for i in range(24):
+        info[i] = {}
+    # info的格式：{小时:{数据名称:数据值}}，如：{1:{'code':0}}
+    for item in allfetch:
+        info[item[1]][item[0]] = item[2]
+
+    result = [[], [], [], []]
+    for i in range(24):
+        result[0].append(i)
+        result[1].append(info[i]['code'])
+        result[2].append(info[i]['temperature'])
+        result[3].append(info[i]['humidity'])
+    modbusslave.set24Data(cityid, result)
+    logging.info('move_24_slave: put data successful')
 
 
 # 获取所有的城市列表，及相应的天气预报代码
@@ -32,129 +125,35 @@ def getCityList():
     return CityList
 
 
-# 写入实时天气的线程
-def RT():
-    for name in cities:
-        cities[name].getRTData()
-        cities[name].setRTData()
-        time.sleep(2)
+def check_thread_alive(thread: threading.Thread):
+    if not thread.is_alive():
+        thread.start()
+        logging.info('mudbusThread restart successful')
 
 
-# 写入24小时天气的线程
-def h24beforstart():
-    for name in cities:
-        cities[name].get24Data()
-        cities[name].set24Data()
-        time.sleep(2)
+def main():
+    for key, value in city_list.items():
+        schedule.every(2).hours.do(OWeather.getRTWeather, location=value)
+        schedule.every(2).hours.do(OWeather.get24Weather, location=value)
+        schedule.every(2).hours.do(move_rt_data, cityname=value)
+        schedule.every(2).hours.do(move_rt_slave, cityid=key, cityname=value)
+        schedule.every(2).hours.do(move_24_slave, cityid=key, cityname=value)
+        schedule.every().day.at("22:30").do(move_24_data, cityname=value)
+    schedule.run_all()
+    schedule.every(2).minutes.do(check_thread_alive, thread=modbusThread)
+    logging.info('schedule start successful')
+    while True:
+        schedule.run_pending()
+        sleep(1)
 
 
-# 当零时刷新天气信息，再把天气信息写入log文件，以供备份
-def h24zeroclock():
-    for name in cities:
-        cities[name].get24Data()
-        time.sleep(2)
-        cities[name].set24Data()
+if __name__ == "__main__":
+    get_target_cities()  # 读取所有目标城市
+    for value in city_list.values():
+        OWeather.checkDB(value)  # 检查目标城市是否有相应的实时表
+    citycounts = len(city_list)
+    modbusThread = threading.Thread(target=modbusslave.main, args=(citycounts,))
+    modbusThread.start()
+    logging.info('mudbusThread start successful')
 
-
-# 当本程序重启后，从log文件恢复当天的24小时天气数据
-def restart():
-    for name in cities:
-        cities[name].getRTData()
-        cities[name].setRTData()
-        cities[name].get24Data()
-        cities[name].set24Data()
-        time.sleep(2)
-
-
-# 按城市建立类
-class City:
-    def __init__(self, CityName, CityCode, slave):
-        self.CityName = CityName
-        self.CityCode = CityCode
-        self.CitySlave = int(slave)
-
-    def getRTData(self):
-        self.CityRTWeather = OWeather.getRTWeather(self.CityCode)
-
-    def get24Data(self):
-        self.City24Weather = OWeather.get24Weather(self.CityCode)
-        print(self.City24Weather)
-        try:
-            hour24temp = open('log\\%shour24temp.log' % (self.CityName), 'r')
-            temp = hour24temp.readlines()
-            temp = list(map(int, temp))
-            hour24temp.close()
-        except:
-            temp = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-            print('未能恢复24h数据')
-        hourflag = self.City24Weather[0][0]
-        i = 0
-        if 0 <= hourflag < 24:
-            while i < (24-hourflag):
-                temp[0 + hourflag+i] = self.City24Weather[0][i]
-                temp[24 + hourflag+i] = self.City24Weather[1][i]
-                temp[48 + hourflag+i] = self.City24Weather[2][i]
-                temp[72 + hourflag+i] = self.City24Weather[3][i]
-                i += 1
-        tempwrite = ''
-        for item in temp:
-            tempwrite = tempwrite + str(item) + '\n'
-        hour24temp = open('log\\%shour24temp.log' % (self.CityName), 'w')
-        hour24temp.write(tempwrite)
-        hour24temp.close()
-
-    def setRTData(self):
-        modbusslave.setRTData(self.CityName, self.CitySlave, self.CityRTWeather)
-
-    def set24Data(self):
-        hour24temp = open('log\\%shour24temp.log' % (self.CityName), 'r')
-        temp = hour24temp.readlines()
-        sortout = [[], [], [], []]
-        j = 0
-        for item in sortout:
-            i = 0
-            while i < 24:
-                item.append(int(temp[j]))
-                i += 1
-                j += 1
-        hour24temp.close()
-        modbusslave.set24Data(self.CityName, self.CitySlave, sortout)
-
-
-# 获得需要查询的城市列表
-TarCityList = getTarCityList()
-CityList = getCityList()
-cities = {}
-# 将目标城市写入字典
-for name in TarCityList:
-    cities[name] = City(name, CityList[name], TarCityList[name])
-restart()  # 重启程序后从log文件中恢复24小时数据
-
-while True:
-    # 每到31分8秒时刷新实时数据
-    time_now1 = time.strftime("%M:%S", time.localtime())
-    if time_now1 == "31:08":
-        RTThread = threading.Thread(target=RT)
-        RTThread.start()
-        RTThread.join(1)
-
-    # 24小时预报2小时更新
-    # 每到0时50分10秒时刷新24小时数据
-    time_now3 = time.strftime("%H:%M:%S", time.localtime())
-    if time_now3 == "00:50:10":
-        h24Thread = threading.Thread(target=h24zeroclock)
-        h24Thread.start()
-        h24Thread.join(1)
-
-    # 每2小时40分10秒时刷新24小时数据
-    checktime = ["06:40:10", "08:40:10", "10:40:10", "12:40:10", "14:40:10",
-                 "16:40:10", "18:40:10", "20:40:10", ]
-    if time_now3 in checktime:
-        h24Thread = threading.Thread(target=h24beforstart)
-        h24Thread.start()
-        h24Thread.join(1)
-
-    time.sleep(0.5)
+    main()

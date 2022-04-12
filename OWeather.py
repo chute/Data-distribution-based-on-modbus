@@ -1,11 +1,51 @@
-import requests
-import re
-from retrying import retry
-import time
 import json
-import datetime
+import time
+from datetime import datetime
 
-LOCATION = 'WTMKQ069CCJ7'  # 所查询的位置，可以使用城市拼音、v3 ID、经纬度等
+import mysql.connector
+import requests
+from retrying import retry
+
+LOCATION = '杭州'  # 所查询的位置，可以使用城市拼音、v3 ID、经纬度等
+
+
+def checkDB(location):
+    realtime = {'code': 0, "temperature": 0, "feels_like": 0, "pressure": 0, "humidity": 0, "visibility": 0,
+                "wind_direction_degree": 0, "wind_speed": 0, "wind_scale": 0, "clouds": 0}
+    fullday = {'code': 0, 'temperature': 0, 'humidity': 0}
+
+    conn = mysql.connector.connect(host='localhost', user='root', passwd='dcny123', database="weather")
+    cur = conn.cursor()
+
+    # 检查实时天气信息
+    for key, value in realtime.items():
+        sql = """SELECT value FROM realtime_info WHERE city='{0}' AND class='{1}' AND hour={2}
+            """.format(location, key, -1)
+        cur.execute(sql)
+        isexcist = cur.fetchall()
+        if len(isexcist):
+            continue
+        else:
+            sql = """INSERT INTO realtime_info ( city,class,hour,value) VALUES ('{0}','{1}',{2},{3});
+                """.format(location, key, -1, value)
+            cur.execute(sql)
+
+    # 检查全天天气信息
+    for i in range(24):
+        for key, value in fullday.items():
+            sql = """SELECT value FROM realtime_info WHERE city='{0}' AND class='{1}' AND hour={2}
+                """.format(location, key, i)
+            cur.execute(sql)
+            isexcist = cur.fetchall()
+            if len(isexcist):
+                continue
+            else:
+                sql = """INSERT INTO realtime_info ( city,class,hour,value) VALUES ('{0}','{1}',{2},{3});
+                    """.format(location, key, i, value)
+                cur.execute(sql)
+
+    conn.commit()
+    conn.close()
 
 
 # 获取实时天气
@@ -29,28 +69,23 @@ def getRTWeather(location):
         localtime = time.asctime(time.localtime(time.time()))
         error.write(localtime + '\n' + result.text + '\n\n')
         error.close()
-        raise Exception('APIerror')
     else:
+        result = {'code': int(float(nowtemp["code"])), "temperature": int(float(nowtemp["temperature"])),
+                  "feels_like": int(float(nowtemp["feels_like"])), "pressure": int(float(nowtemp["pressure"])),
+                  "humidity": int(float(nowtemp["humidity"])), "visibility": int(float(nowtemp["visibility"])),
+                  "wind_direction_degree": int(float(nowtemp["wind_direction_degree"])),
+                  "wind_speed": int(float(nowtemp["wind_speed"])), "wind_scale": int(float(nowtemp["wind_scale"])),
+                  "clouds": int(float(nowtemp["clouds"]))}
 
-        try:
-            weanumnow = float(nowtemp["code"])
-            weatemnow = float(nowtemp["temperature"])
-            weafeelslike = float(nowtemp["feels_like"])
-            weapressure = float(nowtemp["pressure"])
-            weahumidity = float(nowtemp["humidity"])
-            weavisibility = float(nowtemp["visibility"])
-            weawind_direction_degree = float(nowtemp["wind_direction_degree"])
-            weawind_speed = float(nowtemp["wind_speed"])
-            weawind_scale = float(nowtemp["wind_scale"])
-            weaclouds = float(nowtemp["clouds"])
-            x = [int(weanumnow), int(weatemnow), int(weafeelslike), int(weapressure),
-                 int(weahumidity), int(weavisibility), int(weawind_direction_degree),
-                 int(weawind_speed), int(weawind_scale), int(weaclouds)]
-
-        except:
-
-            x = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    return x
+        conn = mysql.connector.connect(host='localhost', user='root', passwd='dcny123', database="weather")
+        cur = conn.cursor()
+        for key, value in result.items():
+            sql = ''' UPDATE realtime_info SET value={3} WHERE city="{0}" AND class="{1}" AND hour={2}
+                '''.format(location, key, -1, value)
+            cur.execute(sql)
+        conn.commit()
+        conn.close()
+        return result
 
 
 # 获取24小时天气
@@ -74,32 +109,31 @@ def get24Weather(location):
         localtime = time.asctime(time.localtime(time.time()))
         error.write(localtime + '\n' + result.text + '\n\n')
         error.close()
-        raise Exception('APIerror')
     else:
-        # 解析时间点
-        WeaHour = []
+        result = {}
         for item in hourstemp:
-            timeformate = datetime.datetime.strptime(item["time"], "%Y-%m-%dT%H:%M:%S%z")
-            WeaHour.append(int(datetime.datetime.strftime(timeformate, "%H")))
-
-        # 解析逐小时天气
-        WeaNum = []
-        for item in hourstemp:
-            WeaNum.append(int(item["code"]))
-
-        # 解析逐小时温度
-        WeaTem = []
-        for item in hourstemp:
-            WeaTem.append(int(item["temperature"]))
-
-        # 解析逐小时湿度
-        WeaHum = []
-        for item in hourstemp:
-            WeaHum.append(int(item["humidity"]))
-    return WeaHour, WeaNum, WeaTem, WeaHum
+            timeformate = datetime.strptime(item["time"], "%Y-%m-%dT%H:%M:%S%z")
+            loophour = int(datetime.strftime(timeformate, "%H"))
+            nowhour = int(datetime.strftime(datetime.now(), "%H"))
+            if nowhour > loophour:
+                continue
+            else:
+                result[loophour] = {'code': item["code"], 'temperature': item["temperature"],
+                                    "humidity": item["humidity"]}
+        conn = mysql.connector.connect(host='localhost', user='root', passwd='dcny123', database="weather")
+        cur = conn.cursor()
+        for hourkey, dickvalue in result.items():
+            for key, value in dickvalue.items():
+                sql = ''' UPDATE realtime_info SET value={3} WHERE city="{0}" AND class="{1}" AND hour={2}
+                    '''.format(location, key, hourkey, value)
+                cur.execute(sql)
+        conn.commit()
+        conn.close()
+        return result
 
 
 if __name__ == '__main__':
+    checkDB(LOCATION)
     RTWeather = getRTWeather(LOCATION)
     print(RTWeather)
     Wea24 = get24Weather(LOCATION)
